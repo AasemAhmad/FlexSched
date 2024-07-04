@@ -9,19 +9,26 @@
 class ResourceManager : public ISchedulingAlgorithm
 {
   public:
-    ResourceManager(WorkloadManagerPtr workload_manager, SchedulingDecisionPtr decision);
-
-    ~ResourceManager() override;
+    explicit ResourceManager(const WorkloadManagerPtr &workload_manager, const SchedulingDecisionPtr &decision);
 
   private:
     void on_simulation_start(double date) override;
     void on_simulation_end(double date) override;
     void on_activity_completed(double date, const std::string &activity_id) override;
-    void on_job_completed(double date, const std::vector<std::string> &job_ids) override;
+    void on_job_end(double date, const std::vector<std::string> &job_ids) override;
     void on_no_more_static_job_to_submit_received(double date) override;
     void on_job_release(double date, const std::vector<std::string> &job_ids) override;
     void on_requested_call(double date) override;
+    void on_job_killed(double date, const std::vector<std::string> &job_ids) override;
+    void on_machine_state_changed(double date, IntervalSet machines, int new_state) override;
+    void on_no_more_external_event_to_occur(double date) override;
+    void on_answer_energy_consumption(double date, double consumed_joules) override;
+    void on_machine_available_notify_event(double date, IntervalSet machines) override;
+    void on_machine_unavailable_notify_event(double date, IntervalSet machines) override;
+    void on_query_estimate_waiting_time(double date, const std::string &job_id) override;
     void make_decisions(double date) override;
+
+    // FIXME
 
     void get_released_jobs();
     void insert_checkpointing_request_into_job_queue(JobPtr job, double date);
@@ -32,8 +39,8 @@ class ResourceManager : public ISchedulingAlgorithm
     void handle_job_complete(const std::string &ended_job_id, double date);
 
     void create_and_submit_dynamic_checkpoint(const JobPtr &parent_job, size_t checkpoint_size, double date);
-    void execute_dynamic_checkpoint(JobPtr job, double date);
-    void execute_stage_in(JobPtr parent_job, double stage_in_size, double date);
+    void execute_dynamic_checkpoint(const JobPtr &job, double date);
+    void execute_stage_in(const JobPtr &parent_job, double stage_in_size, double date);
 
     std::string get_parent_job_id(const std::string &job_id) const;
     std::pair<bool, std::string> is_checkpointing_op_pending(const std::string &id) const;
@@ -43,27 +50,29 @@ class ResourceManager : public ISchedulingAlgorithm
     bool is_expand_op(const JobPtr &job) const;
     bool is_same_config(const JobPtr &job) const;
 
-    void get_not_allowed_machines_when_expanding(JobPtr job, IntervalSet &reserved_machines);
+    void get_not_allowed_machines_when_expanding(const JobPtr &job, IntervalSet &reserved_machines);
     void map_solution_to_schedule(const Solution &solution);
     void execute_jobs_on_batsim(double date);
-    void inverse_assigned_io_res_units(JobPtr job, double date);
-    void inverse_assigned_compute_res_units(JobPtr job, double date);
-    bool check_job_new_reconfiguration(JobPtr job);
+    void inverse_assigned_io_res_units(const JobPtr &job, double date);
+    void inverse_assigned_compute_res_units(const JobPtr &job, double date);
+    bool check_job_new_reconfiguration(const JobPtr &job);
 
     Queue<std::string, Job>::SortableElementIterator remove_job_form_queue(const std::string &id);
 
-    void expand_job_by_given_compute_res_units(JobPtr job, double date);
-    void shrink_job_by_given_compute_res_units(JobPtr job, double date);
-    void keep_current_compute_res_units(JobPtr job);
+    void expand_job_by_given_compute_res_units(const JobPtr &job, double date);
+    void shrink_job_by_given_compute_res_units(const JobPtr &job, double date);
+    void keep_current_compute_res_units(const JobPtr &job);
 
-    void expand_job_by_given_io_res_units(JobPtr job, double date);
-    void shrink_job_by_given_io_res_units(JobPtr job, double date);
-    void keep_current_io_res_units(JobPtr job);
+    void expand_job_by_given_io_res_units(const JobPtr &job, double date);
+    void shrink_job_by_given_io_res_units(const JobPtr &job, double date);
+    void keep_current_io_res_units(const JobPtr &job);
 
-    void resume_job_execution_with_same_configuration(JobPtr job, double dat);
-    void resume_job_execution_after_stage_in(JobPtr job, double dat);
+    void resume_job_execution_with_same_configuration(const JobPtr &job, double dat);
+    void resume_job_execution_after_stage_in(const JobPtr &job, double dat);
 
-    void generate_scheduling_alg_settings();
+    void generate_scheduling_alg_settings() const;
+
+    // TODO add data members
 
     friend class HPCWorkloadSolverCP;
 };
