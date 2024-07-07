@@ -42,13 +42,18 @@ class ResourceManager : public ISchedulingAlgorithm
     void execute_dynamic_checkpoint(const JobPtr &job, double date);
     void execute_stage_in(const JobPtr &parent_job, double stage_in_size, double date);
 
-    std::string get_parent_job_id(const std::string &job_id) const;
-    std::pair<bool, std::string> is_checkpointing_op_pending(const std::string &id) const;
-    void compute_schedule(double date, Solution &sol);
+    void create_and_submit_dynamic_delay(const JobPtr &parent_job, double date);
+    void execute_delay(const JObPtr &job, double date);
+    void create_and_submit_dynamic_parallel_task(const JobPtr &parent_job, double date);
+    void execute_dynamic_parallel_task(const JobPtr &job, double date);
 
     bool is_shrink_op(const JobPtr &job) const;
     bool is_expand_op(const JobPtr &job) const;
     bool is_same_config(const JobPtr &job) const;
+
+    std::string get_parent_job_id(const std::string &job_id) const;
+    std::pair<bool, std::string> is_checkpointing_op_pending(const std::string &id) const;
+    void compute_schedule(double date, Solution &sol);
 
     void get_not_allowed_machines_when_expanding(const JobPtr &job, IntervalSet &reserved_machines);
     void map_solution_to_schedule(const Solution &solution);
