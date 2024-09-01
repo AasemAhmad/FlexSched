@@ -1,35 +1,39 @@
 #pragma once
-
-//FIXME
-#include "ProblemInstance/ProblemInstance.hpp"
+#include "ResourceManager/ResourceManager.hpp"
 #include "Solution/Solution.hpp"
+#include "WorkloadManager/WorkloadManager.hpp"
 #include <ilcp/cp.h>
 
-class CPSolver
+class HPCWorkloadSolverCP
 {
   public:
-    explicit CPSolver(const ProblemInstance &);
-    CPSolver(const CPSolver &) = delete;
-    CPSolver &operator=(const CPSolver &) = delete;
+    explicit HPCWorkloadSolverCP(const std::shared_ptr<WorkloadManager> &w,
+                                 const std::vector<std::shared_ptr<Resource>> &r);
+    HPCWorkloadSolverCP(const HPCWorkloadSolverCP &) = delete;
+    HPCWorkloadSolverCP &operator=(const HPCWorkloadSolverCP &) = delete;
 
     Solution solve();
 
   private:
-    void init_resource_arrays(const IloModel &model);
-    void add_job_start_time_constraints(const IloModel &model);
-    void add_job_modes_constraints(const IloModel &model);
-    void add_precedence_constraints(const IloModel &model) const;
-    void add_capacity_constraints(const IloModel &model) const;
-    void solve_cp_model(IloCP &cp, const IloModel &model) const;
-    void set_solution_status(const IloCP &cp, Solution &solution) const;
-    void set_solution(const IloCP &cp, Solution &solution) const;
-    void add_objective(const IloModel &) const;
+    void _initialize_resource_arrays();
+    void _init_task_and_mode_arrays();
+    IloIntervalVar _add_job_start_time_constraints(const JobPtr &job) const;
+    void _add_job_modes_constraints(const JobPtr &job, size_t job_index);
+    void _add_capacity_constraints();
+    void _add_objective_and_solve(Solution &solution);
+    void _set_solution(IloCP &cp, Solution &solution);
+    void _set_solution_helper(IloCP &cp, Solution &solution);
 
-    const ProblemInstance &problem_instance;
-    IloCumulFunctionExprArray processes;
-    IloIntArray capacities;
-    IloIntervalVarArray tasks;
-    IloIntervalVarArray2 modes;
-    IloIntExprArray starts;
-    IloIntExprArray ends;
+    std::shared_ptr<WorkloadManager> _workload_manager;
+    std::vector<std::shared_ptr<Resource>> _resources;
+
+    IloModel _model;
+    IloCumulFunctionExprArray _processes;
+    IloIntArray _capacities;
+    IloIntervalVarArray _tasks;
+    IloIntervalVarArray2 _modes;
+    IloIntExprArray _nb_compute_res_units;
+    IloIntExprArray _nb_io_res_units;
+    IloIntExprArray _ends;
+    IloIntExprArray _starts;
 };
