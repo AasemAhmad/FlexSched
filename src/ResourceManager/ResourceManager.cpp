@@ -404,8 +404,7 @@ void ResourceManager::post_process_current_activity(double date, const std::stri
     _workload_manager->_altered = true;
 
     LOG_F(INFO,
-          "job %s ->  activity completed event received at %g activity_index = %ld was allocated to-> compute res: %s, "
-          "io "
+          "job %s ->  activity completed event received at %g activity_index = %ld was allocated to-> compute res: %s, io "
           "resources:%s",
           job->id.c_str(), date, job->info.current_activity_index,
           job->allocation.used_compute_res_units.to_string_hyphen().c_str(),
@@ -512,13 +511,11 @@ void ResourceManager::resume_job_execution_after_stage_in(const JobPtr &job, dou
         job->info.current_activity_index, job->allocation.used_io_res_units);
     PPK_ASSERT_ERROR(emplaced_io_units, "Failed, Key already exists");
 
+    ProfilePtr profile_info = _workload_manager->create_dynamic_addition_io_profile(job, date);
+
     size_t nb_nodes = job->allocation.selected_mode.nb_requested_compute_resource_units;
-    // FIXME
-    size_t com = _workload_manager->get_communication_size(job);
 
-    const std::string profile_name = std::format("additional_io_{}_{}", job->id, job->info.current_activity_index);
-
-    ProfilePtr profile = Profile::create_profile(ProfileType::PARALLEL_HOMOGENEOUS, profile_name, 0, 0, 0, com, date);
+    PPK_ASSERT_ERROR(profile_info, "Failed to create profile");
 
     job->allocation.start_time = std::floor(date);
 
@@ -534,7 +531,7 @@ void ResourceManager::resume_job_execution_after_stage_in(const JobPtr &job, dou
 
     LOG_F(INFO, "workload id = %s", workload->get_id().c_str());
 
-    Comm::command_static_job_execution(job, _decision, workload, profile, io_data, date);
+    Comm::command_static_job_execution(job, _decision, workload, profile_info, io_data, date);
 
     double reservation_time =
         date + (job->info.nb_activities - job->info.current_activity_index) * (double)job->allocation.selected_walltime;
@@ -554,10 +551,7 @@ void ResourceManager::resume_job_execution_with_same_configuration(const JobPtr 
     IntervalSet not_allowed_machines;
     IntervalSet add_io_machines = job->allocation.used_compute_res_units;
 
-    size_t cpu_size = _workload_manager->get_cpu_size(job);
-    size_t com_size = _workload_manager->get_communication_size(job);
-    std::string profile_name = std::format("ph_{}", job->info.current_activity_index);
-    ProfilePtr profile = Profile::create_profile(ProfileType::PARALLEL_HOMOGENEOUS, profile_name, 0, 0, cpu_size, com_size, date);
+    ProfilePtr profile_info = _workload_manager->create_compute_io_profile(job, date);
 
     IoData io_data;
     io_data.pfs_id = this->_total_nb_compute_resources;
@@ -568,9 +562,7 @@ void ResourceManager::resume_job_execution_with_same_configuration(const JobPtr 
     auto workload = _workload_manager->workloads_queue->get_element(workload_id);
     PPK_ASSERT_ERROR(workload, "workload %s could not be found", workload_id.c_str());
 
-    Comm::command_static_job_execution(job, _decision, workload, profile, io_data, date);
-
-    LOG_F(INFO, "command_dynamic_job_execution");
+    Comm::command_static_job_execution(job, _decision, workload, profile_info, io_data, date);
 
     auto [activity_compute_allocation_it, emplaced_nodes] = job->allocation.compute_res_units_allocation_per_activity.try_emplace(
         job->info.current_activity_index, job->allocation.used_compute_res_units);
@@ -641,20 +633,11 @@ void ResourceManager::compute_schedule(double date, Solution &solution)
 void ResourceManager::execute_jobs_on_batsim(double date)
 {
     LOG_F(INFO, "%s started", source_location_to_string(std::source_location::current()).c_str());
-    LOG_F(INFO, "nb jobs = %ld", _workload_manager->execution_queue->nb_elements());
 
     for (auto job_it = _workload_manager->execution_queue->begin(); job_it != _workload_manager->execution_queue->end();)
     {
         JobPtr job = (*job_it);
-
-        if (std::size_t pos = job->id.find_last_of('.'); pos != std::string::npos)
-        {
-            job->id = std::format("{}{}", job->id.substr(0, pos + 1), std::to_string(job->info.current_activity_index));
-        } else
-        {
-            job->id = std::format("{}.{}", job->id, job->info.current_activity_index);
-        }
-        std::string job_id = job->id;
+        job->id = _workload_manager->get_activity_id(job);
 
         LOG_F(INFO, "job %s reconfigurable = %s", job->id.c_str(), (job->config.reconfigurable) ? "true" : "false");
 
@@ -666,7 +649,6 @@ void ResourceManager::execute_jobs_on_batsim(double date)
         if (job->info.job_type == JobType::DYNAMIC_IO_CHECKPOINT)
         {
             execute_dynamic_checkpoint_job(job, date);
-
         } else
         {
             if (job->info.current_activity_index == 0)
@@ -681,23 +663,22 @@ void ResourceManager::execute_jobs_on_batsim(double date)
                 handle_job_subsequent_activities(job, date);
             }
         }
-        job_it = _workload_manager->remove_job_form_execution_queue(job_id);
-        _workload_manager->remove_job_from_waiting_queue(job_id);
+        job_it = _workload_manager->remove_job_form_execution_queue(job->id);
+        _workload_manager->remove_job_from_waiting_queue(job->id);
     }
 }
 
 void ResourceManager::handle_job_subsequent_activities(const JobPtr &job, double date)
 {
     LOG_F(INFO, "%s started", source_location_to_string(std::source_location::current()).c_str());
+    PPK_ASSERT_ERROR(job->info.current_activity_index > 0 && job->info.current_activity_index < job->info.nb_activities);
 
-    IntervalSet previous_iteration_allocated_machines =
+    IntervalSet previous_allocated_compute_res_units =
         job->allocation.compute_res_units_allocation_per_activity.at(job->info.current_activity_index - 1);
 
     if (is_expand_op(job))
     {
         expand_job_by_given_nb_compute_res_units(job, date);
-        LOG_F(INFO, "Job %s expanded from %d to %d nodes", job->id.c_str(), previous_iteration_allocated_machines.size(),
-              job->allocation.used_compute_res_units.size());
     } else if (is_shrink_op(job))
     {
         shrink_job_by_given_nb_compute_res_units(job, date);
@@ -721,9 +702,8 @@ void ResourceManager::handle_job_subsequent_activities(const JobPtr &job, double
 
     IntervalSet add_io_machines = job->allocation.used_compute_res_units;
 
-    auto profile_name = std::format("additional_io_{}_{}", job->id, job->info.current_activity_index);
-    size_t com_size = _workload_manager->get_communication_size(job);
-    auto profile = Profile::create_profile(ProfileType::PARALLEL_HOMOGENEOUS, profile_name, 0, 0, 0, com_size, date);
+    ProfilePtr profile_info = _workload_manager->create_dynamic_addition_io_profile(job, date);
+    PPK_ASSERT_ERROR(profile_info, "Could not create profile for job %s", job->id.c_str());
 
     int pfs_id = this->_total_nb_compute_resources;
     IoData io_data;
@@ -735,7 +715,7 @@ void ResourceManager::handle_job_subsequent_activities(const JobPtr &job, double
     PPK_ASSERT_ERROR(workload, "workload %s could not be found", workload_id.c_str());
 
     // Comm::register_additional_io_profile(job, decision, workload_name, profile, date);
-    Comm::command_static_job_execution(job, _decision, workload, profile, io_data, date);
+    Comm::command_static_job_execution(job, _decision, workload, profile_info, io_data, date);
 
     double expected_finish_time =
         (job->info.nb_activities - job->info.current_activity_index) * static_cast<double>(job->allocation.selected_walltime);
@@ -748,18 +728,24 @@ void ResourceManager::handle_job_subsequent_activities(const JobPtr &job, double
 
 bool ResourceManager::is_shrink_op(const JobPtr &job) const
 {
+    PPK_ASSERT_ERROR(job->info.current_activity_index > 0, "Invalid call for %s",
+                     source_location_to_string(std::source_location::current()).c_str());
     return (job->allocation.selected_mode.nb_requested_compute_resource_units <
             (int)job->allocation.compute_res_units_allocation_per_activity.at(job->info.current_activity_index - 1).size());
 }
 
 bool ResourceManager::is_expand_op(const JobPtr &job) const
 {
+    PPK_ASSERT_ERROR(job->info.current_activity_index > 0, "Invalid call for %s",
+                     source_location_to_string(std::source_location::current()).c_str());
     return (job->allocation.selected_mode.nb_requested_compute_resource_units >
             (int)job->allocation.compute_res_units_allocation_per_activity.at(job->info.current_activity_index - 1).size());
 }
 
 bool ResourceManager::is_same_config(const JobPtr &job) const
 {
+    PPK_ASSERT_ERROR(job->info.current_activity_index > 0, "Invalid call for %s",
+                     source_location_to_string(std::source_location::current()).c_str());
     return (job->allocation.selected_mode.nb_requested_compute_resource_units ==
             (int)job->allocation.compute_res_units_allocation_per_activity.at(job->info.current_activity_index - 1).size());
 }
@@ -783,18 +769,13 @@ void ResourceManager::create_and_submit_dynamic_checkpoint_job(const JobPtr &par
 {
     LOG_F(INFO, "%s started", source_location_to_string(std::source_location::current()).c_str());
 
-    size_t checkpoint_size = _workload_manager->get_checkpoint_size(parent_job);
+    ProfilePtr profile_info = _workload_manager->create_dynamic_io_checkpoint_profile(parent_job, date);
+    JobPtr cr_job = _workload_manager->create_dynamic_io_checkpoint_job(parent_job, profile_info, date);
 
-    auto profile_name = std::format("ckpt_{}_{}", parent_job->id, parent_job->info.current_activity_index);
-    auto profile = Profile::create_profile(ProfileType::PARALLEL_HOMOGENEOUS_PFS, profile_name, 0, checkpoint_size, 0, 0, date);
-
-    auto job_factory = std::make_shared<DynamicJobFactory>();
-    JobPtr cr_job = job_factory->create_dynamic_io_job(parent_job, JobType::DYNAMIC_IO_CHECKPOINT, profile, date);
-    cr_job->allocation.selected_mode = parent_job->allocation.selected_mode;
+    PPK_ASSERT_ERROR(profile_info && cr_job, "Checkpointing job could not be created");
 
     double reservation_time = date + static_cast<double>(cr_job->allocation.selected_walltime) +
-                              static_cast<double>(parent_job->info.nb_activities - parent_job->info.current_activity_index) *
-                                  static_cast<double>(parent_job->allocation.selected_walltime);
+                              _workload_manager->get_job_estimated_walltime(parent_job);
 
     _compute_resources->set_resource_units_available_at(parent_job->allocation.used_compute_res_units, reservation_time);
     _io_resources->set_resource_units_available_at(parent_job->allocation.used_io_res_units, reservation_time);
@@ -807,7 +788,7 @@ void ResourceManager::create_and_submit_dynamic_checkpoint_job(const JobPtr &par
     auto workload = _workload_manager->workloads_queue->get_element(workload_id);
     PPK_ASSERT_ERROR(workload, "workload %s was not found", workload_id.c_str());
 
-    Comm::command_dynamic_job_execution(cr_job, _decision, workload, profile, io_data, date);
+    Comm::command_dynamic_job_execution(cr_job, _decision, workload, profile_info, io_data, date);
     this->_nb_jobs_submitted++;
 }
 
@@ -818,16 +799,12 @@ void ResourceManager::execute_dynamic_checkpoint_job(const JobPtr &cr_job, doubl
     JobPtr parent_job = _workload_manager->get_job(parent_id);
     PPK_ASSERT_ERROR(parent_job != nullptr, "parent job %s was not found", parent_id.c_str());
     parent_job->info.is_in_checkpointing_op = true;
-    const std::string profile_name = std::format("ckpt_{}_{}", parent_job->id, parent_job->info.current_activity_index);
 
-    size_t io_write = _workload_manager->get_checkpoint_size(parent_job);
+    ProfilePtr profile_info = _workload_manager->create_dynamic_io_checkpoint_profile(parent_job, date);
 
-    ProfilePtr profile_info =
-        Profile::create_profile(ProfileType::PARALLEL_HOMOGENEOUS_PFS, profile_name, 0, io_write, 0, 0, date);
+    double estimated_walltime = _workload_manager->get_activity_estimated_walltime(cr_job);
 
-    double reservation_time = date + static_cast<double>(cr_job->allocation.selected_walltime) +
-                              static_cast<double>(parent_job->info.nb_activities - parent_job->info.current_activity_index) *
-                                  static_cast<double>(parent_job->allocation.selected_walltime);
+    double reservation_time = date + estimated_walltime + _workload_manager->get_job_estimated_walltime(parent_job);
 
     _compute_resources->set_resource_units_available_at(parent_job->allocation.used_compute_res_units, reservation_time);
     _io_resources->set_resource_units_available_at(parent_job->allocation.used_io_res_units, reservation_time);
@@ -846,47 +823,29 @@ void ResourceManager::execute_dynamic_checkpoint_job(const JobPtr &cr_job, doubl
 
 void ResourceManager::execute_stage_in(const JobPtr &parent_job, double date)
 {
-    std::source_location loc = std::source_location::current();
-    LOG_F(INFO, "%s", source_location_to_string(loc).c_str());
-
-    PPK_ASSERT_ERROR(parent_job != nullptr, "parent job was not found");
-
-    std::string parent_id = parent_job->id;
-    const std::string profile_name = std::format("stgin_{}_{}", parent_job->id, parent_job->info.current_activity_index);
-    size_t io_reads = _workload_manager->get_stage_in_size(parent_job);
-    size_t io_writes = 0;
+    LOG_F(INFO, "%s", source_location_to_string(std::source_location::current()).c_str());
 
     IntervalSet free_machines = _compute_resources->get_free_resource_units_at_current_date(date);
 
     LOG_F(INFO, "date %g, free machines = %s, req_nb_res = %ld", date, free_machines.to_string_hyphen().c_str(),
           parent_job->allocation.selected_mode.nb_requested_compute_resource_units);
     PPK_ASSERT_ERROR(free_machines.size() >= parent_job->allocation.selected_mode.nb_requested_compute_resource_units);
+
     parent_job->allocation.used_compute_res_units =
         free_machines.left(parent_job->allocation.selected_mode.nb_requested_compute_resource_units);
 
     LOG_F(INFO, "parent_job allocated machines = %s", parent_job->allocation.used_compute_res_units.to_string_hyphen().c_str());
 
-    std::shared_ptr<DynamicJobFactory> job_facotry = std::make_shared<DynamicJobFactory>();
-    ProfilePtr profile_info =
-        Profile::create_profile(ProfileType::PARALLEL_HOMOGENEOUS_PFS, profile_name, io_reads, io_writes, 0, 0, date);
-
-    auto stgin_job = job_facotry->create_dynamic_io_job(parent_job, JobType::DYNAMIC_IO_STAGE_IN, profile_info, date);
-
-    stgin_job->allocation.selected_mode = parent_job->allocation.selected_mode;
-    stgin_job->allocation.selected_walltime = parent_job->info.walltime;
+    ProfilePtr profile_info = _workload_manager->create_dynamic_io_stage_in_profile(parent_job, date);
+    JobPtr stage_in_job = _workload_manager->create_dynamic_io_stage_in_job(parent_job, profile_info, date);
 
     const std::string workload_id = Job::get_workload_id(parent_job->id);
     auto workload = _workload_manager->workloads_queue->get_element(workload_id);
     PPK_ASSERT_ERROR(workload, "Workload %s cannot be found", workload_id.c_str());
-    workload->_jobs->append_element(stgin_job);
+    workload->_jobs->append_element(stage_in_job);
 
-    Mode mode = parent_job->allocation.selected_mode;
-
-    LOG_F(INFO, "parent_Job selected mode = %s", mode.mode_to_string().c_str());
-
-    double reservation_time = date + static_cast<double>(stgin_job->allocation.selected_walltime) +
-                              static_cast<double>(parent_job->info.nb_activities - parent_job->info.current_activity_index) *
-                                  static_cast<double>(parent_job->allocation.selected_walltime);
+    double reservation_time =
+        date + stage_in_job->allocation.selected_walltime + _workload_manager->get_job_estimated_walltime(parent_job);
 
     _compute_resources->set_resource_units_available_at(parent_job->allocation.used_compute_res_units, reservation_time);
     _io_resources->set_resource_units_available_at(parent_job->allocation.used_io_res_units, reservation_time);
@@ -895,7 +854,7 @@ void ResourceManager::execute_stage_in(const JobPtr &parent_job, double date)
     io_data.pfs_id = this->_total_nb_compute_resources;
     io_data.storage_mapping = {{"pfs", this->_total_nb_compute_resources}};
 
-    Comm::command_dynamic_job_execution(stgin_job, _decision, workload, profile_info, io_data, date);
+    Comm::command_dynamic_job_execution(stage_in_job, _decision, workload, profile_info, io_data, date);
     this->_nb_jobs_submitted++;
 }
 
@@ -919,7 +878,7 @@ void ResourceManager::execute_dynamic_parallel_task(const JobPtr &job, double da
 bool ResourceManager::check_job_new_reconfiguration(const JobPtr &job)
 {
     LOG_F(INFO, "%s started", source_location_to_string(std::source_location::current()).c_str());
-    PPK_ASSERT_ERROR(job->info.job_type == JobType::CONFIGURABLE);
+
     PPK_ASSERT_ERROR(job->info.current_activity_index > 0 && job->info.current_activity_index < job->info.nb_activities);
     IntervalSet current_machines = job->allocation.used_compute_res_units;
 
@@ -927,9 +886,11 @@ bool ResourceManager::check_job_new_reconfiguration(const JobPtr &job)
             job->allocation.compute_res_units_allocation_per_activity.at(job->info.current_activity_index - 1);
         current_machines.size() > previous_machines.size())
     {
+        PPK_ASSERT_ERROR(job->config.configurable && job->config.reconfigurable, "Job %s is not reconfigurable", job->id.c_str());
         PPK_ASSERT_ERROR((current_machines & previous_machines) == previous_machines);
     } else if (current_machines.size() < previous_machines.size())
     {
+        PPK_ASSERT_ERROR(job->config.configurable && job->config.reconfigurable, "Job %s is not reconfigurable", job->id.c_str());
         PPK_ASSERT_ERROR((previous_machines & current_machines) == current_machines);
     } else
     {
