@@ -5,7 +5,7 @@ FlexSched is a holistic scheduling tool that leverages the Multi-Mode Resource-C
 
 FlexSched is being developed to be fully compatible with the [Batsim](https://batsim.readthedocs.io/en/latest/) simulator, enabling detailed simulation and evaluation of scheduling strategies.
 
-**Note: FlexSched is currently under development.**
+**Note: FlexSched is currently under active development. The code will be made publicly available ASAP**
 
 ## Features
 - **Resource Constraints**: Effectively manage compute and I/O resources.
