@@ -1,8 +1,9 @@
-add_subdirectory(Cplex)
-add_subdirectory(Gurobi)
-add_subdirectory(ILPSolverModel)
+add_subdirectory(Batsched)
 add_subdirectory(OpenXLSX)
 
-file(GLOB SOURCES "*.cpp")
-add_library(External ${LIBRARY_LINKAGE} ${SOURCES})
-target_link_libraries(External OpenXLSX::OpenXLSX)
+add_library(External INTERFACE)
+
+target_link_libraries(External INTERFACE
+    Batsched
+    OpenXLSX::OpenXLSX
+)

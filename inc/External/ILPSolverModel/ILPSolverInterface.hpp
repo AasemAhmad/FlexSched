@@ -24,9 +24,9 @@ struct Solver
 {
     virtual void initialize_local_environments(size_t nb_threads) const = 0;
     virtual std::string get_solver_identification() const = 0;
-    virtual SolutionILP solve_ilp(Solution &init_solution, const ILPSolverModel &ilp_model, bool verbose,
-                                  double gap, double time_limit, size_t nb_threads,
-                                  size_t thread_id) const = 0;
+    virtual SolutionILP solve_ilp(Solution &init_solution, const ILPSolverModel &ilp_model, bool verbose, double gap,
+                                  double time_limit, size_t nb_threads, size_t thread_id) const
+        = 0;
     virtual ~Solver() = default;
 };
 

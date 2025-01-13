@@ -1,5 +1,6 @@
 #pragma once
 
+#include "External/Batsched/pempek_assert.hpp"
 #include <algorithm>
 #include <list>
 #include <memory>

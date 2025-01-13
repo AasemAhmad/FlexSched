@@ -2,17 +2,14 @@
 
 #include "External/Batsched/pempek_assert.hpp"
 #include <algorithm>
-#include <cstdlib>
-#include <format>
-#include <iterator>
+#include <iostream>
 #include <list>
 #include <random>
 #include <rapidjson/document.h>
 #include <source_location>
-#include <span>
-#include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 template <typename CharT = char> std::basic_string<CharT> source_location_to_string(const std::source_location &loc)
@@ -28,52 +25,155 @@ template <typename CharT = char> std::basic_string<CharT> source_location_to_str
     }
 }
 
-template <typename T> T random_range(T min, T max)
+template <typename T> inline T parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name);
+
+template <> inline std::string parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
 {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    std::uniform_int_distribution<T> distrib(min, max);
-    return distrib(gen);
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), "Missing: %s Field", field_name.c_str());
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsString() || json_desc[field_name.c_str()].IsInt(),
+                     "Invalid Value: %s Field should be a string or an integer", field_name.c_str());
+
+    if (json_desc[field_name.c_str()].IsInt())
+    {
+        return std::to_string(json_desc[field_name.c_str()].GetInt());
+    }
+    return json_desc[field_name.c_str()].GetString();
 }
 
-template <class Container>
-typename Container::mapped_type get_value(const Container &container, const typename Container::key_type &key,
-                                          const std::source_location &loc)
+template <> inline long double parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
 {
-    typename Container::const_iterator it = container.find(key);
-    PPK_ASSERT_ERROR(it != container.cend(), "Invalid key %s", source_location_to_string(loc).c_str());
-    return it->second;
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), "Missing: %s Field", field_name.c_str());
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsNumber() || json_desc[field_name.c_str()].IsDouble(),
+                     "Invalid Value: %s Field should be a number  or double", field_name.c_str());
+    return json_desc[field_name.c_str()].GetDouble();
 }
 
-template <class Container, class T>
-void set_value_helper(Container &container, const typename Container::key_type &key, const T &value,
-                      const std::source_location &loc)
+template <> inline bool parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
 {
-    auto [iterator, emplaced] = container.try_emplace(key, value);
-    PPK_ASSERT_ERROR(emplaced, "Value with the given key was found, function %s!",
-                     source_location_to_string(loc).c_str());
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), "Missing: %s Field", field_name.c_str());
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsBool(), "Invalid Value: %s  Field should be true or false",
+                     field_name.c_str());
+    return json_desc[field_name.c_str()].GetBool();
 }
 
-template <class Container, class T = typename Container::mapped_type>
-    requires(!std::is_pointer_v<T>)
-void set_value(Container &container, const typename Container::key_type &key, const T &value,
-               const std::source_location &loc)
+template <> inline size_t parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
 {
-    set_value_helper(container, key, value, loc);
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), "Missing: %s Field", field_name.c_str());
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsUint(), "invalid Value: %s Field should be a UINT", field_name.c_str());
+    return json_desc[field_name.c_str()].GetUint();
 }
 
-template <class Container, class T = typename Container::mapped_type>
-    requires(std::is_pointer_v<T>)
-void set_value(Container &container, const typename Container::key_type &key, const T &value,
-               const std::source_location &loc)
+template <typename T> inline std::vector<T> parse_array(const rapidjson::Value &json_desc, const std::string &field_name);
+
+template <> inline std::vector<long double> parse_array(const rapidjson::Value &json_desc, const std::string &field_name)
 {
-    PPK_ASSERT_ERROR(value != nullptr, "nullptr value is not allowed, function %s",
-                     source_location_to_string(loc).c_str());
-    set_value_helper(container, key, value, loc);
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), "Missing: Field", field_name.c_str());
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsArray(), "Invalid Value: %s Field should be an array", field_name.c_str());
+    const rapidjson::Value &array_value = json_desc[field_name.c_str()];
+    PPK_ASSERT_ERROR(array_value.IsArray(), "Invalid Value: %s Field should be an array", field_name.c_str());
+
+    PPK_ASSERT_ERROR(array_value.Size() > 0, "Invalid Array Size:  %s Field, array size must be strictly positive (size = % d)",
+                     field_name.c_str(), array_value.Size());
+
+    std::vector<long double> vec(array_value.Size(), 0);
+
+    for (size_t i = 0; i < vec.size(); ++i)
+    {
+        PPK_ASSERT_ERROR(array_value[i].IsNumber(), "Invalid Value: %s Field, array elements must be numbers",
+                         field_name.c_str());
+
+        vec[i] = array_value[i].GetDouble();
+
+        PPK_ASSERT_ERROR(vec[i] >= 0, "Invalid Value: %s Field, all array elements must be non-negative", field_name.c_str());
+    }
+
+    return vec;
 }
 
-template <typename Container, typename T, typename Field>
-Container sort_by_field(const Container &input, Field T::*field_ptr)
+template <> inline std::vector<size_t> parse_array(const rapidjson::Value &json_desc, const std::string &field_name)
+{
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), "Missing: %s Field", field_name.c_str());
+
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsArray(), "Invalid Value: Field %s should be an array", field_name.c_str());
+
+    const rapidjson::Value &array_value = json_desc[field_name.c_str()];
+
+    PPK_ASSERT_ERROR(array_value.IsArray(), "Invalid Value: %s Field should be an array", field_name.c_str());
+
+    PPK_ASSERT_ERROR(array_value.Size() > 0, "Invalid Array Size:  %s Field, array size must be strictly positive (size = % d)",
+                     field_name.c_str(), array_value.Size());
+
+    std::vector<size_t> vec(array_value.Size(), 0);
+
+    for (size_t i = 0; i < vec.size(); ++i)
+    {
+        PPK_ASSERT_ERROR(array_value[i].IsUint(), "Invalid Value: %s Field array element should be Uint", field_name.c_str());
+
+        vec[i] = array_value[i].GetUint();
+    }
+    return vec;
+}
+
+template <> inline std::vector<std::string> parse_array(const rapidjson::Value &json_desc, const std::string &field_name)
+{
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), "Missing: %s Field", field_name.c_str());
+
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsArray(), "Invalid Value: Field %s should be an array", field_name.c_str());
+
+    const rapidjson::Value &array_value = json_desc[field_name.c_str()];
+
+    PPK_ASSERT_ERROR(array_value.IsArray(), "Invalid Value: %s Field should be an array", field_name.c_str());
+
+    PPK_ASSERT_ERROR(array_value.Size() > 0, "Invalid Array Size:  %s Field, array size must be strictly positive (size = % d)",
+                     field_name.c_str(), array_value.Size());
+
+    std::vector<std::string> vec(array_value.Size(), "");
+
+    for (size_t i = 0; i < array_value.Size(); ++i)
+    {
+        PPK_ASSERT_ERROR(array_value[i].IsString(), "Invalid Value: %s: array elements should be string", field_name.c_str());
+
+        vec[i] = array_value[i].GetString();
+    }
+    return vec;
+}
+
+template <typename K, typename V>
+inline std::unordered_map<K, V> parse_map(const rapidjson::Value &json_desc, const std::string &field_name,
+                                          const std::string &key_name, const std::string &value_name);
+template <>
+inline std::unordered_map<size_t, std::string> parse_map(const rapidjson::Value &json_desc, const std::string &field_name,
+                                                         const std::string &key_name, const std::string &value_name)
+{
+    std::unordered_map<size_t, std::string> map;
+
+    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.c_str()), " Missing:  %s Field", field_name.c_str());
+    PPK_ASSERT_ERROR(json_desc[field_name.c_str()].IsArray(), "Invalid Type: %s Field should be an array", field_name.c_str());
+    const rapidjson::Value &array_value = json_desc[field_name.c_str()];
+    PPK_ASSERT_ERROR(array_value.IsArray(), "Invalid Type: %s Field should be an array", field_name.c_str());
+
+    PPK_ASSERT_ERROR(array_value.Size() > 0, "Invalid Array Size:  %s Field, array size must be strictly positive (size = % d)",
+                     field_name.c_str(), array_value.Size());
+
+    for (size_t i = 0; i < array_value.Size(); ++i)
+    {
+        PPK_ASSERT_ERROR(array_value[i].IsObject(), "Invalid Type: %s Field, all elements must be objects", field_name.c_str());
+        PPK_ASSERT_ERROR(array_value[i].HasMember(key_name.c_str()), "Invalid Type: %s Field, all elements must have a %s key",
+                         field_name.c_str(), key_name.c_str());
+        PPK_ASSERT_ERROR(array_value[i].HasMember(value_name.c_str()), "Invalid Type: %s Field all elements must have a %s Value",
+                         field_name.c_str(), value_name.c_str());
+
+        size_t key = array_value[i][key_name.c_str()].GetUint();
+        PPK_ASSERT_ERROR(key > 0, "Invalid Key: %s Field, key must be strictly positive");
+        std::string value = array_value[i][value_name.c_str()].GetString();
+
+        map.try_emplace(key, value);
+    }
+
+    return map;
+}
+
+template <typename Container, typename T, typename Field> Container sort_by_field(const Container &input, Field T::*field_ptr)
 {
     Container sorted = input;
     std::ranges::sort(sorted, [&](const T &a, const T &b) { return a.*field_ptr < b.*field_ptr; });
@@ -94,117 +194,3 @@ struct NumericalStringComparator
     bool operator()(const std::string &lhs, size_t rhs) const { return std::stoul(lhs) < rhs; }
     bool operator()(size_t lhs, const std::string &rhs) const { return lhs < std::stoul(rhs); }
 };
-
-template <typename T>
-concept Scalar =
-    std::same_as<T, std::string> || std::same_as<T, double> || std::same_as<T, bool> || std::same_as<T, size_t>;
-
-template <Scalar T> inline T parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name);
-
-template <> inline std::string parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.data()), "%s is missing", field_name.c_str());
-    const auto &value = json_desc[field_name.data()];
-    PPK_ASSERT_ERROR(value.IsString() || value.IsInt(), "%s field is invalid, it should be a string or integer",
-                     field_name.c_str());
-    return value.IsInt() ? std::to_string(value.GetInt()) : value.GetString();
-}
-
-template <> inline double parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.data()), "%s field is missing", field_name.c_str());
-    const auto &value = json_desc[field_name.data()];
-    PPK_ASSERT_ERROR(value.IsNumber() || value.IsDouble(), "%s field is invalid, it should be a number or double",
-                     field_name.c_str());
-    return value.GetDouble();
-}
-
-template <> inline bool parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.data()), "%s field is missing", field_name.c_str());
-    const auto &value = json_desc[field_name.data()];
-    PPK_ASSERT_ERROR(value.IsBool(), "%s field is invalid, it should be true or false", field_name.c_str());
-    return value.GetBool();
-}
-
-template <> inline size_t parse_scalar(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.data()), "%s field is missing", field_name.c_str());
-    const auto &value = json_desc[field_name.data()];
-    PPK_ASSERT_ERROR(value.IsUint(), "%s field is invalid, it should be a UINT", field_name.c_str());
-    return value.GetUint();
-}
-
-template <typename T> void validate_array_field(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    PPK_ASSERT_ERROR(json_desc.HasMember(field_name.data()), "%s field is missing", field_name.c_str());
-    const auto &array_value = json_desc[field_name.data()];
-    PPK_ASSERT_ERROR(array_value.IsArray(), "%s field is invalid, it should be an array", field_name.c_str());
-    PPK_ASSERT_ERROR(array_value.Size() > 0, "%s invalid-sized array (size = %d): must be strictly positive",
-                     field_name.c_str(), array_value.Size());
-}
-
-template <typename T>
-concept ArrayElement = Scalar<T>;
-
-template <ArrayElement T>
-inline std::vector<T> parse_array(const rapidjson::Value &json_desc, const std::string &field_name);
-
-template <> inline std::vector<double> parse_array(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    validate_array_field<double>(json_desc, field_name);
-
-    const auto &array_value = json_desc[field_name.data()];
-    std::vector<double> vec;
-    vec.reserve(array_value.Size());
-
-    for (const auto &element : array_value.GetArray())
-    {
-        PPK_ASSERT_ERROR(element.IsNumber(), "%s array element is invalid: all elements must be numbers",
-                         field_name.c_str());
-
-        vec.push_back(element.GetDouble());
-
-        PPK_ASSERT_ERROR(vec.back() >= 0, "%s array element is invalid: all elements must be non-negative",
-                         field_name.c_str());
-    }
-    return vec;
-}
-
-template <> inline std::vector<size_t> parse_array(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    validate_array_field<unsigned>(json_desc, field_name);
-
-    const auto &array_value = json_desc[field_name.data()];
-    std::vector<size_t> vec;
-    vec.reserve(array_value.Size());
-
-    for (const auto &element : array_value.GetArray())
-    {
-        PPK_ASSERT_ERROR(element.IsUint(), "%s array element is invalid: all elements must be Uint",
-                         field_name.c_str());
-
-        vec.push_back(element.GetUint());
-    }
-
-    return vec;
-}
-
-template <>
-inline std::vector<std::string> parse_array(const rapidjson::Value &json_desc, const std::string &field_name)
-{
-    validate_array_field<std::string>(json_desc, field_name);
-
-    const auto &array_value = json_desc[field_name.data()];
-    std::vector<std::string> vec;
-    vec.reserve(array_value.Size());
-
-    for (const auto &element : array_value.GetArray())
-    {
-        PPK_ASSERT_ERROR(element.IsUint(), "%s array element is invalid: all elements must be string",
-                         field_name.c_str());
-
-        vec.emplace_back(element.GetString());
-    }
-    return vec;
-}
